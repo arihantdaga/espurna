@@ -15,32 +15,44 @@ bool _wifi_smartconfig_running = false;
 bool _wifi_smartconfig_initial = false;
 uint8_t _wifi_ap_mode = WIFI_AP_FALLBACK;
 
+#if WIFI_GRATUITOUS_ARP_SUPPORT
+unsigned long _wifi_gratuitous_arp_interval = 0;
+unsigned long _wifi_gratuitous_arp_last = 0;
+#endif
+
 // -----------------------------------------------------------------------------
 // PRIVATE
 // -----------------------------------------------------------------------------
 
-void _wifiCheckAP() {
-
-    if ((WIFI_AP_FALLBACK == _wifi_ap_mode) &&
-        (jw.connected()) &&
-        ((WiFi.getMode() & WIFI_AP) > 0) &&
-        (WiFi.softAPgetStationNum() == 0)
-    ) {
-        jw.enableAP(false);
+void _wifiUpdateSoftAP() {
+    if (WiFi.softAPgetStationNum() == 0) {
+        #if USE_PASSWORD
+            jw.setSoftAP(getSetting("hostname").c_str(), getAdminPass().c_str());
+        #else
+            jw.setSoftAP(getSetting("hostname").c_str());
+        #endif
     }
+}
 
+void _wifiCheckAP() {
+    if (
+        (WIFI_AP_FALLBACK == _wifi_ap_mode)
+        && ((WiFi.getMode() & WIFI_AP) > 0)
+        && jw.connected()
+        && (WiFi.softAPgetStationNum() == 0)
+    ) {
+         jw.enableAP(false);
+    }
 }
 
 void _wifiConfigure() {
 
     jw.setHostname(getSetting("hostname").c_str());
-    #if USE_PASSWORD
-        jw.setSoftAP(getSetting("hostname").c_str(), getAdminPass().c_str());
-    #else
-        jw.setSoftAP(getSetting("hostname").c_str());
-    #endif
+    _wifiUpdateSoftAP();
+
     jw.setConnectTimeout(WIFI_CONNECT_TIMEOUT);
     wifiReconnectCheck();
+
     jw.enableAPFallback(WIFI_FALLBACK_APMODE);
     jw.cleanNetworks();
 
@@ -84,6 +96,14 @@ void _wifiConfigure() {
     sleep_mode = constrain(sleep_mode, 0, 2);
 
     WiFi.setSleepMode(static_cast<WiFiSleepType_t>(sleep_mode));
+
+    #if WIFI_GRATUITOUS_ARP_SUPPORT
+        _wifi_gratuitous_arp_last = millis();
+        _wifi_gratuitous_arp_interval = getSetting("wifiGarpIntvl", secureRandom(
+            WIFI_GRATUITOUS_ARP_INTERVAL_MIN, WIFI_GRATUITOUS_ARP_INTERVAL_MAX
+        )).toInt();
+    #endif
+
 }
 
 void _wifiScan(uint32_t client_id = 0) {
@@ -217,8 +237,29 @@ void _wifiInject() {
                 setSetting("mask", 1, WIFI2_MASK);
                 setSetting("dns", 1, WIFI2_DNS);
             }
-        }
 
+            if (strlen(WIFI3_SSID)) {
+                if (!hasSetting("ssid", 2)) {
+                    setSetting("ssid", 2, WIFI3_SSID);
+                    setSetting("pass", 2, WIFI3_PASS);
+                    setSetting("ip", 2, WIFI3_IP);
+                    setSetting("gw", 2, WIFI3_GW);
+                    setSetting("mask", 2, WIFI3_MASK);
+                    setSetting("dns", 2, WIFI3_DNS);
+                }
+
+                if (strlen(WIFI4_SSID)) {
+                    if (!hasSetting("ssid", 3)) {
+                        setSetting("ssid", 3, WIFI4_SSID);
+                        setSetting("pass", 3, WIFI4_PASS);
+                        setSetting("ip", 3, WIFI4_IP);
+                        setSetting("gw", 3, WIFI4_GW);
+                        setSetting("mask", 3, WIFI4_MASK);
+                        setSetting("dns", 3, WIFI4_DNS);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -349,6 +390,7 @@ void _wifiDebugCallback(justwifi_messages_t code, char * parameter) {
     }
 
     if (code == MESSAGE_ACCESSPOINT_DESTROYED) {
+        _wifiUpdateSoftAP();
         DEBUG_MSG_P(PSTR("[WIFI] Access point destroyed\n"));
     }
 
@@ -403,6 +445,11 @@ void _wifiInitCommands() {
         terminalOK();
     });
 
+    terminalRegisterCommand(F("WIFI.STA"), [](Embedis* e) {
+        wifiStartSTA();
+        terminalOK();
+    });
+
     terminalRegisterCommand(F("WIFI.AP"), [](Embedis* e) {
         wifiStartAP();
         terminalOK();
@@ -437,7 +484,7 @@ void _wifiInitCommands() {
 
 #if WEB_SUPPORT
 
-bool _wifiWebSocketOnReceive(const char * key, JsonVariant& value) {
+bool _wifiWebSocketOnKeyCheck(const char * key, JsonVariant& value) {
     if (strncmp(key, "wifi", 4) == 0) return true;
     if (strncmp(key, "ssid", 4) == 0) return true;
     if (strncmp(key, "pass", 4) == 0) return true;
@@ -448,7 +495,7 @@ bool _wifiWebSocketOnReceive(const char * key, JsonVariant& value) {
     return false;
 }
 
-void _wifiWebSocketOnSend(JsonObject& root) {
+void _wifiWebSocketOnConnected(JsonObject& root) {
     root["maxNetworks"] = WIFI_MAX_NETWORKS;
     root["wifiScan"] = getSetting("wifiScan", WIFI_SCAN_NETWORKS).toInt() == 1;
     JsonArray& wifi = root.createNestedArray("wifi");
@@ -471,8 +518,75 @@ void _wifiWebSocketOnAction(uint32_t client_id, const char * action, JsonObject&
 #endif
 
 // -----------------------------------------------------------------------------
+// SUPPORT
+// -----------------------------------------------------------------------------
+
+#if WIFI_GRATUITOUS_ARP_SUPPORT
+
+// ref: lwip src/core/netif.c netif_issue_reports(...)
+// ref: esp-lwip/core/ipv4/etharp.c garp_tmr()
+// TODO: only for ipv4, need (?) a different method with ipv6
+bool _wifiSendGratuitousArp() {
+
+    bool result = false;
+    for (netif* interface = netif_list; interface != nullptr; interface = interface->next) {
+        if (
+            (interface->flags & NETIF_FLAG_ETHARP)
+            && (interface->hwaddr_len == ETHARP_HWADDR_LEN)
+        #if LWIP_VERSION_MAJOR == 1
+            && (!ip_addr_isany(&interface->ip_addr))
+        #else
+            && (!ip4_addr_isany_val(*netif_ip4_addr(interface)))
+        #endif
+            && (interface->flags & NETIF_FLAG_LINK_UP)
+            && (interface->flags & NETIF_FLAG_UP)
+        ) {
+            etharp_gratuitous(interface);
+            result = true;
+        }
+    }
+
+    return result;
+}
+
+void _wifiSendGratuitousArp(unsigned long interval) {
+    if (millis() - _wifi_gratuitous_arp_last > interval) {
+        _wifi_gratuitous_arp_last = millis();
+        _wifiSendGratuitousArp();
+    }
+}
+
+#endif // WIFI_GRATUITOUS_ARP_SUPPORT
+
+// -----------------------------------------------------------------------------
 // INFO
 // -----------------------------------------------------------------------------
+
+// backported WiFiAPClass methods
+
+String _wifiSoftAPSSID() {
+    struct softap_config config;
+    wifi_softap_get_config(&config);
+
+    char* name = reinterpret_cast<char*>(config.ssid);
+    char ssid[sizeof(config.ssid) + 1];
+    memcpy(ssid, name, sizeof(config.ssid));
+    ssid[sizeof(config.ssid)] = '\0';
+
+    return String(ssid);
+}
+
+String _wifiSoftAPPSK() {
+    struct softap_config config;
+    wifi_softap_get_config(&config);
+
+    char* pass = reinterpret_cast<char*>(config.password);
+    char psk[sizeof(config.password) + 1];
+    memcpy(psk, pass, sizeof(config.password));
+    psk[sizeof(config.password)] = '\0';
+
+    return String(psk);
+}
 
 void wifiDebug(WiFiMode_t modes) {
 
@@ -481,7 +595,6 @@ void wifiDebug(WiFiMode_t modes) {
 
     if (((modes & WIFI_STA) > 0) && ((WiFi.getMode() & WIFI_STA) > 0)) {
 
-        uint8_t * bssid = WiFi.BSSID();
         DEBUG_MSG_P(PSTR("[WIFI] ------------------------------------- MODE STA\n"));
         DEBUG_MSG_P(PSTR("[WIFI] SSID  %s\n"), WiFi.SSID().c_str());
         DEBUG_MSG_P(PSTR("[WIFI] IP    %s\n"), WiFi.localIP().toString().c_str());
@@ -490,9 +603,7 @@ void wifiDebug(WiFiMode_t modes) {
         DEBUG_MSG_P(PSTR("[WIFI] DNS   %s\n"), WiFi.dnsIP().toString().c_str());
         DEBUG_MSG_P(PSTR("[WIFI] MASK  %s\n"), WiFi.subnetMask().toString().c_str());
         DEBUG_MSG_P(PSTR("[WIFI] HOST  http://%s.local\n"), WiFi.hostname().c_str());
-        DEBUG_MSG_P(PSTR("[WIFI] BSSID %02X:%02X:%02X:%02X:%02X:%02X\n"),
-            bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5], bssid[6]
-        );
+        DEBUG_MSG_P(PSTR("[WIFI] BSSID %s\n"), WiFi.BSSIDstr().c_str());
         DEBUG_MSG_P(PSTR("[WIFI] CH    %d\n"), WiFi.channel());
         DEBUG_MSG_P(PSTR("[WIFI] RSSI  %d\n"), WiFi.RSSI());
         footer = true;
@@ -501,8 +612,8 @@ void wifiDebug(WiFiMode_t modes) {
 
     if (((modes & WIFI_AP) > 0) && ((WiFi.getMode() & WIFI_AP) > 0)) {
         DEBUG_MSG_P(PSTR("[WIFI] -------------------------------------- MODE AP\n"));
-        DEBUG_MSG_P(PSTR("[WIFI] SSID  %s\n"), getSetting("hostname").c_str());
-        DEBUG_MSG_P(PSTR("[WIFI] PASS  %s\n"), getAdminPass().c_str());
+        DEBUG_MSG_P(PSTR("[WIFI] SSID  %s\n"), _wifiSoftAPSSID().c_str());
+        DEBUG_MSG_P(PSTR("[WIFI] PASS  %s\n"), _wifiSoftAPPSK().c_str());
         DEBUG_MSG_P(PSTR("[WIFI] IP    %s\n"), WiFi.softAPIP().toString().c_str());
         DEBUG_MSG_P(PSTR("[WIFI] MAC   %s\n"), WiFi.softAPmacAddress().c_str());
         footer = true;
@@ -549,6 +660,12 @@ bool wifiConnected() {
 
 void wifiDisconnect() {
     jw.disconnect();
+}
+
+void wifiStartSTA() {
+    jw.disconnect();
+    jw.enableSTA(true);
+    jw.enableAP(false);
 }
 
 void wifiStartAP(bool only) {
@@ -627,9 +744,9 @@ void wifiSetup() {
     #endif
 
     #if WEB_SUPPORT
-        wsOnSendRegister(_wifiWebSocketOnSend);
-        wsOnReceiveRegister(_wifiWebSocketOnReceive);
-        wsOnActionRegister(_wifiWebSocketOnAction);
+        wsRegister()
+            .onConnected(_wifiWebSocketOnConnected)
+            .onKeyCheck(_wifiWebSocketOnKeyCheck);
     #endif
 
     #if TERMINAL_SUPPORT
@@ -666,5 +783,12 @@ void wifiLoop() {
         last = millis();
         _wifiCheckAP();
     }
+
+    #if WIFI_GRATUITOUS_ARP_SUPPORT
+        // Only send out gra arp when in STA mode
+        if (_wifi_gratuitous_arp_interval) {
+            _wifiSendGratuitousArp(_wifi_gratuitous_arp_interval);
+        }
+    #endif
 
 }

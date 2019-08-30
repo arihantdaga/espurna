@@ -11,6 +11,8 @@
 //#define ALLNET_4DUINO_IOT_WLAN_RELAIS
 //#define ALLTERCO_SHELLY1
 //#define ALLTERCO_SHELLY2
+//#define ALLTERCO_SHELLY1PM
+//#define ALLTERCO_SHELLY25
 //#define ARILUX_AL_LC01
 //#define ARILUX_AL_LC02
 //#define ARILUX_AL_LC02_V14
@@ -72,6 +74,7 @@
 //#define ITEAD_SONOFF_RF
 //#define ITEAD_SONOFF_RFBRIDGE
 //#define ITEAD_SONOFF_S31
+//#define ITEAD_SONOFF_S31_LITE
 //#define ITEAD_SONOFF_SV
 //#define ITEAD_SONOFF_T1_1CH
 //#define ITEAD_SONOFF_T1_2CH
@@ -100,6 +103,7 @@
 //#define MAXCIO_WDE004
 //#define MAXCIO_WUS002S
 //#define NEO_COOLCAM_NAS_WR01W
+//#define NEXETE_A19
 //#define NODEMCU_BASIC
 //#define NODEMCU_LOLIN
 //#define OPENENERGYMONITOR_MQTT_RELAY
@@ -126,6 +130,7 @@
 //#define WION_50055
 //#define WORKCHOICE_ECOPLUG
 //#define XENON_SM_PW702U
+//#define ISELECTOR_SM_PW702
 //#define XIAOMI_SMART_DESK_LAMP
 //#define YIDIAN_XSSSA05
 //#define YJZK_SWITCH_1CH
@@ -211,3 +216,4 @@
 //#define V9261F_SUPPORT         1
 //#define VEML6075_SUPPORT       1
 //#define VL53L1X_SUPPORT        1
+//#define ADE7953_SUPPORT        1
