@@ -43,6 +43,11 @@
 #define BROKER_SUPPORT              1               // If Alexa enabled enable BROKER
 #endif
 
+#if RPN_RULES_SUPPORT
+#undef BROKER_SUPPORT
+#define BROKER_SUPPORT              1               // If RPN Rules enabled enable BROKER
+#endif
+
 #if INFLUXDB_SUPPORT
 #undef BROKER_SUPPORT
 #define BROKER_SUPPORT              1               // If InfluxDB enabled enable BROKER
@@ -67,7 +72,7 @@
 #endif
 #endif
 
-#if THINKSPEAK_SUPPORT
+#if THINGSPEAK_SUPPORT
 #undef BROKER_SUPPORT
 #define BROKER_SUPPORT              1               // If Thingspeak enabled enable BROKER
 #endif
@@ -85,4 +90,24 @@
 #if LWIP_VERSION_MAJOR != 1
 #undef MDNS_CLIENT_SUPPORT
 #define MDNS_CLIENT_SUPPORT         0          // default resolver already handles this
+#endif
+
+#if not defined(ARDUINO_ESP8266_RELEASE_2_3_0)
+#undef TELNET_SERVER_ASYNC_BUFFERED
+#define TELNET_SERVER_ASYNC_BUFFERED 1         // enable buffered telnet by default on latest Cores
+#endif
+
+#if LLMNR_SUPPORT && defined(ARDUINO_ESP8266_RELEASE_2_3_0)
+#undef LLMNR_SUPPORT
+#define LLMNR_SUPPORT 0
+#endif
+
+#if NETBIOS_SUPPORT && defined(ARDUINO_ESP8266_RELEASE_2_3_0)
+#undef NETBIOS_SUPPORT
+#define NETBIOS_SUPPORT 0
+#endif
+
+#if SSDP_SUPPORT && defined(ARDUINO_ESP8266_RELEASE_2_3_0)
+#undef SSDP_SUPPORT
+#define SSDP_SUPPORT 0
 #endif

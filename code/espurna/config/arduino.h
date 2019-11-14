@@ -27,6 +27,7 @@
 //#define BLITZWOLF_BWSHPX_V23
 //#define DIGOO_NX_SP202
 //#define ELECTRODRAGON_WIFI_IOT
+//#define ESPURNA_BASE
 //#define ESPURNA_CORE
 //#define EUROMATE_WIFI_STECKER_SCHUKO
 //#define EUROMATE_WIFI_STECKER_SCHUKO_V2
@@ -34,6 +35,7 @@
 //#define EXS_WIFI_RELAY_V50
 //#define FORNORM_ZLD_34EU
 //#define FOXEL_LIGHTFOX_DUAL
+//#define FS_UAP1
 //#define GBLIFE_RGBW_SOCKET
 //#define GENERIC_8CH
 //#define GENERIC_AG_L4
@@ -69,6 +71,7 @@
 //#define ITEAD_SONOFF_DUAL_R2
 //#define ITEAD_SONOFF_IFAN02
 //#define ITEAD_SONOFF_LED
+//#define ITEAD_SONOFF_MINI
 //#define ITEAD_SONOFF_POW
 //#define ITEAD_SONOFF_POW_R2
 //#define ITEAD_SONOFF_RF
@@ -102,6 +105,7 @@
 //#define MANCAVEMADE_ESPLIVE
 //#define MAXCIO_WDE004
 //#define MAXCIO_WUS002S
+//#define MUVIT_IO_MIOBULB001
 //#define NEO_COOLCAM_NAS_WR01W
 //#define NEXETE_A19
 //#define NODEMCU_BASIC
@@ -114,7 +118,9 @@
 //#define SMARTLIFE_MINI_SMART_SOCKET
 //#define STM_RELAY
 //#define TECKIN_SP20
+//#define TECKIN_SP21
 //#define TECKIN_SP22_V14
+//#define TFLAG_NX_SMX00
 //#define TINKERMAN_ESPURNA_H06
 //#define TINKERMAN_ESPURNA_H08
 //#define TINKERMAN_ESPURNA_SWITCH
@@ -166,6 +172,7 @@
 //#define NTP_SUPPORT            0
 //#define RF_SUPPORT             1
 //#define RFM69_SUPPORT          1
+//#define RPN_RULES_SUPPORT      0
 //#define SCHEDULER_SUPPORT      0
 //#define SENSOR_SUPPORT         1
 //#define SPIFFS_SUPPORT         1
@@ -212,6 +219,7 @@
 //#define SHT3X_I2C_SUPPORT      1
 //#define SI7021_SUPPORT         1
 //#define SONAR_SUPPORT          1
+//#define T6613_SUPPORT          1
 //#define TMP3X_SUPPORT          1
 //#define V9261F_SUPPORT         1
 //#define VEML6075_SUPPORT       1

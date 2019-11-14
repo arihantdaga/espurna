@@ -238,6 +238,7 @@ void _sensorWebSocketOnConnected(JsonObject& root) {
     for (unsigned char i=0; i<_sensors.size(); i++) {
 
         BaseSensor * sensor = _sensors[i];
+        UNUSED(sensor);
 
         #if EMON_ANALOG_SUPPORT
             if (sensor->getID() == SENSOR_EMON_ANALOG_ID) {
@@ -1027,6 +1028,15 @@ void _sensorLoad() {
         _sensors.push_back(sensor);
     }
     #endif
+	
+    #if T6613_SUPPORT
+    {
+        T6613Sensor * sensor = new T6613Sensor();
+        sensor->setRX(T6613_RX_PIN);
+        sensor->setTX(T6613_TX_PIN);
+        _sensors.push_back(sensor);
+    }
+    #endif
 
     #if TMP3X_SUPPORT
     {
@@ -1378,17 +1388,17 @@ void _sensorConfigure() {
                 double value;
                 HLW8012Sensor * sensor = (HLW8012Sensor *) _sensors[i];
 
-                if (value = getSetting("pwrExpectedC", 0).toFloat()) {
+                if ((value = getSetting("pwrExpectedC", 0).toFloat())) {
                     sensor->expectedCurrent(value);
                     setSetting("pwrRatioC", sensor->getCurrentRatio());
                 }
 
-                if (value = getSetting("pwrExpectedV", 0).toInt()) {
+                if ((value = getSetting("pwrExpectedV", 0).toInt())) {
                     sensor->expectedVoltage(value);
                     setSetting("pwrRatioV", sensor->getVoltageRatio());
                 }
 
-                if (value = getSetting("pwrExpectedP", 0).toInt()) {
+                if ((value = getSetting("pwrExpectedP", 0).toInt())) {
                     sensor->expectedPower(value);
                     setSetting("pwrRatioP", sensor->getPowerRatio());
                 }
@@ -1531,7 +1541,9 @@ void _sensorReport(unsigned char index, double value) {
     dtostrf(value, 1, decimals, buffer);
 
     #if BROKER_SUPPORT
-        brokerPublish(BROKER_MSG_TYPE_SENSOR ,magnitudeTopic(magnitude.type).c_str(), magnitude.local, buffer);
+    #if not BROKER_REAL_TIME
+        brokerPublish(BROKER_MSG_TYPE_SENSOR ,magnitudeTopic(magnitude.type).c_str(), magnitude.global, buffer);
+    #endif
     #endif
 
     #if MQTT_SUPPORT
@@ -1788,6 +1800,13 @@ void sensorLoop() {
                 // -------------------------------------------------------------
 
                 value_show = _magnitudeProcess(magnitude.type, magnitude.decimals, value_raw);
+                #if BROKER_REAL_TIME
+                {
+                    char buffer[64];
+                    dtostrf(value_show, 1-sizeof(buffer), magnitude.decimals, buffer);
+                    brokerPublish(BROKER_MSG_TYPE_SENSOR ,magnitudeTopic(magnitude.type).c_str(), magnitude.global, buffer);
+                }
+                #endif
 
                 // -------------------------------------------------------------
                 // Debug

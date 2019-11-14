@@ -1,3 +1,4 @@
+var debug = false;
 var websock;
 var password = false;
 var maxNetworks;
@@ -51,7 +52,7 @@ function sensorName(id) {
         "HLW8012", "V9261F", "ECH1560", "Analog", "Digital",
         "Events", "PMSX003", "BMX280", "MHZ19", "SI7021",
         "SHT3X I2C", "BH1750", "PZEM004T", "AM2320 I2C", "GUVAS12SD",
-        "TMP3X", "Sonar", "SenseAir", "GeigerTicks", "GeigerCPM",
+        "T6613", "TMP3X", "Sonar", "SenseAir", "GeigerTicks", "GeigerCPM",
         "NTC", "SDS011", "MICS2710", "MICS5525", "VL53L1X", "VEML6075",
         "EZOPH"
     ];
@@ -250,19 +251,25 @@ function addValue(data, name, value) {
     var is_group = [
         "ssid", "pass", "gw", "mask", "ip", "dns",
         "schEnabled", "schSwitch","schAction","schType","schHour","schMinute","schWDs","schUTC",
-        "relayBoot", "relayPulse", "relayTime",
+        "relayBoot", "relayPulse", "relayTime", "relayLastSch",
         "mqttGroup", "mqttGroupSync", "relayOnDisc",
         "dczRelayIdx", "dczMagnitude",
         "tspkRelay", "tspkMagnitude",
         "ledMode", "ledRelay",
         "adminPass",
-        "node", "key", "topic"
+        "node", "key", "topic",
+        "rpnRule", "rpnTopic", "rpnName"
     ];
 
 
     // join both adminPass 1 and 2
     if (name.startsWith("adminPass")) {
         name = "adminPass";
+    }
+
+    // join all relayLastSch values
+    if (name.startsWith("relayLastSch")) {
+        name = "relayLastSch";
     }
 
     if (name in data) {
@@ -432,12 +439,17 @@ function initSelectGPIO(select) {
 // Actions
 // -----------------------------------------------------------------------------
 
+function send(json) {
+    if (debug) console.log(json);
+    websock.send(json);
+}
+
 function sendAction(action, data) {
-    websock.send(JSON.stringify({action: action, data: data}));
+    send(JSON.stringify({action: action, data: data}));
 }
 
 function sendConfig(data) {
-    websock.send(JSON.stringify({config: data}));
+    send(JSON.stringify({config: data}));
 }
 
 function setOriginalsFromValues(force) {
@@ -790,6 +802,11 @@ function doClearFilters() {
 
 <!-- endRemoveIf(!rfm69)-->
 
+function delParent() {
+    var parent = $(this).parent().parent();
+    $(parent).remove();
+}
+
 // -----------------------------------------------------------------------------
 // Visualization
 // -----------------------------------------------------------------------------
@@ -846,10 +863,37 @@ function createMagnitudeList(data, container, template_name) {
 <!-- endRemoveIf(!sensor)-->
 
 // -----------------------------------------------------------------------------
+// RPN Rules
+// -----------------------------------------------------------------------------
+
+function addRPNRule() {
+    var template = $("#rpnRuleTemplate .pure-g")[0];
+    var line = $(template).clone();
+    var tabindex = $("#rpnRules > div").length + 100;
+    $(line).find("input").each(function() {
+        $(this).attr("tabindex", tabindex++);
+    });
+    $(line).find("button").on('click', delParent);
+    line.appendTo("#rpnRules");
+}
+
+function addRPNTopic() {
+    var template = $("#rpnTopicTemplate .pure-g")[0];
+    var line = $(template).clone();
+    var tabindex = $("#rpnTopics > div").length + 120;
+    $(line).find("input").each(function() {
+        $(this).attr("tabindex", tabindex++);
+    });
+    $(line).find("button").on('click', delParent);
+    line.appendTo("#rpnTopics");
+}
+
+// -----------------------------------------------------------------------------
 // RFM69
 // -----------------------------------------------------------------------------
 
 <!-- removeIf(!rfm69)-->
+
 function addMapping() {
     var template = $("#nodeTemplate .pure-g")[0];
     var line = $(template).clone();
@@ -857,14 +901,10 @@ function addMapping() {
     $(line).find("input").each(function() {
         $(this).attr("tabindex", tabindex++);
     });
-    $(line).find("button").on('click', delMapping);
+    $(line).find("button").on('click', delParent);
     line.appendTo("#mapping");
 }
 
-function delMapping() {
-    var parent = $(this).parent().parent();
-    $(parent).remove();
-}
 <!-- endRemoveIf(!rfm69)-->
 
 // -----------------------------------------------------------------------------
@@ -1025,6 +1065,10 @@ function initRelayConfig(data) {
         $("select[name='relayBoot']", line).val(data.boot[i]);
         $("select[name='relayPulse']", line).val(data.pulse[i]);
         $("input[name='relayTime']", line).val(data.pulse_time[i]);
+        $("input[name='relayLastSch']", line).prop('checked', data.sch_last[i]);
+        $("input[name='relayLastSch']", line).attr("id", "relayLastSch" + i);
+        $("input[name='relayLastSch']", line).attr("name", "relayLastSch" + i);
+        $("input[name='relayLastSch" + i + "']", line).next().attr("for","relayLastSch" + (i));
 
         if ("group" in data) {
             $("input[name='mqttGroup']", line).val(data.group[i]);
@@ -1339,6 +1383,8 @@ function initLightfox(data, relayCount) {
 
 function processData(data) {
 
+    if (debug) console.log(data);
+
     // title
     if ("app_name" in data) {
         var title = data.app_name;
@@ -1459,9 +1505,51 @@ function processData(data) {
 				});
 			}
 			return;
-		}
+        }
 
         <!-- endRemoveIf(!rfm69)-->
+
+        // ---------------------------------------------------------------------
+        // RPN Rules
+        // ---------------------------------------------------------------------
+
+        if (key == "rpnRules") {
+			for (var i in data.rpnRules) {
+
+				// add a new row
+				addRPNRule();
+
+				// get group
+				var line = $("#rpnRules .pure-g")[i];
+
+				// fill in the blanks
+				var rule = data.rpnRules[i];
+                $("input", line).val(rule).attr("original", rule);
+
+            }
+			return;
+		}
+
+        if (key == "rpnTopics") {
+			for (var i in data.rpnTopics) {
+
+				// add a new row
+				addRPNTopic();
+
+				// get group
+				var line = $("#rpnTopics .pure-g")[i];
+
+				// fill in the blanks
+				var topic = data.rpnTopics[i];
+				var name = data.rpnNames[i];
+                $("input[name='rpnTopic']", line).val(topic).attr("original", topic);
+                $("input[name='rpnName']", line).val(name).attr("original", name);
+
+            }
+			return;
+        }
+        
+        if (key == "rpnNames") return;
 
         // ---------------------------------------------------------------------
         // Lights
@@ -1499,8 +1587,10 @@ function processData(data) {
         }
 
         if ("mireds" === key) {
-            $("#mireds").val(value);
-            $("span.mireds").html(value);
+            $("#mireds").attr("min", value["cold"]);
+            $("#mireds").attr("max", value["warm"]);
+            $("#mireds").val(value["value"]);
+            $("span.mireds").html(value["value"]);
             return;
         }
 
@@ -1569,7 +1659,7 @@ function processData(data) {
         // -----------------------------------------------------------------------------
 
         if ("haConfig" === key) {
-            websock.send("{}");
+            send("{}");
             $("#haConfig")
                 .append(new Text(value))
                 .height($("#haConfig")[0].scrollHeight);
@@ -1680,7 +1770,7 @@ function processData(data) {
 
         // Web log
         if ("weblog" === key) {
-            websock.send("{}");
+            send("{}");
 
             msg = value["msg"];
             pre = value["pre"];
@@ -1700,6 +1790,11 @@ function processData(data) {
         var position = key.indexOf("Visible");
         if (position > 0 && position === key.length - 7) {
             var module = key.slice(0,-7);
+            if (module == "sch") {
+                $("li.module-" + module).css("display", "inherit");
+                $("div.module-" + module).css("display", "flex");
+                return;
+            }
             $(".module-" + module).css("display", "inherit");
             return;
         }
@@ -1893,13 +1988,6 @@ function connectToCurrentURL() {
     connectToURL(new URL(window.location));
 }
 
-function enableWSLogging() {
-    var processDataOrig = window.processData;
-    window.processData = function(data) { console.log(data); processDataOrig(data); }
-    var sendActionOrig = window.sendAction;
-    window.sendAction = function(action, data) { console.log(action,data); sendActionOrig(action, data);}
-}
-
 $(function() {
 
     initMessages();
@@ -1950,9 +2038,13 @@ $(function() {
     $(".button-add-light-schedule").on("click", { schType: 2 }, addSchedule);
     <!-- endRemoveIf(!light)-->
 
+    $(".button-add-rpnrule").on('click', addRPNRule);
+    $(".button-add-rpntopic").on('click', addRPNTopic);
+
+    $(".button-del-parent").on('click', delParent);
+
     <!-- removeIf(!rfm69)-->
     $(".button-add-mapping").on('click', addMapping);
-    $(".button-del-mapping").on('click', delMapping);
     $(".button-clear-counts").on('click', doClearCounts);
     $(".button-clear-messages").on('click', doClearMessages);
     $(".button-clear-filters").on('click', doClearFilters);

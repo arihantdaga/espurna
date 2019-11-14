@@ -130,6 +130,18 @@
 #define TELNET_SERVER           TELNET_SERVER_ASYNC // Can be either TELNET_SERVER_ASYNC (using ESPAsyncTCP) or TELNET_SERVER_WIFISERVER (using WiFiServer)
 #endif
 
+#ifndef TELNET_SERVER_ASYNC_BUFFERED
+#define TELNET_SERVER_ASYNC_BUFFERED         0  // Enable buffered output for telnet server (+1Kb)
+                                                // Helps to avoid lost data with lwip2 TCP_MSS=536 option
+#endif
+
+// Enable this flag to add support for reverse telnet (+800 bytes)
+// This is useful to telnet to a device behind a NAT or firewall
+// To use this feature, start a listen server on a publicly reachable host with e.g. "ncat -vlp <port>" and use the MQTT reverse telnet command to connect
+#ifndef TELNET_REVERSE_SUPPORT
+#define TELNET_REVERSE_SUPPORT  0
+#endif
+
 //------------------------------------------------------------------------------
 // TERMINAL
 //------------------------------------------------------------------------------
@@ -1042,6 +1054,7 @@
 #define MQTT_TOPIC_VERSION          "version"
 #define MQTT_TOPIC_UPTIME           "uptime"
 #define MQTT_TOPIC_DATETIME         "datetime"
+#define MQTT_TOPIC_TIMESTAMP        "timestamp"
 #define MQTT_TOPIC_FREEHEAP         "freeheap"
 #define MQTT_TOPIC_VCC              "vcc"
 #ifndef MQTT_TOPIC_STATUS
@@ -1068,6 +1081,7 @@
 #define MQTT_TOPIC_IRIN             "irin"
 #define MQTT_TOPIC_IROUT            "irout"
 #define MQTT_TOPIC_OTA              "ota"
+#define MQTT_TOPIC_TELNET_REVERSE   "telnet_reverse"
 
 // Light module
 #define MQTT_TOPIC_CHANNEL          "channel"
@@ -1117,6 +1131,10 @@
 
 #ifndef BROKER_SUPPORT
 #define BROKER_SUPPORT          1           // The broker is a poor-man's pubsub manager
+#endif
+
+#ifndef BROKER_REAL_TIME
+#define BROKER_REAL_TIME        1           // Report real time data
 #endif
 
 // -----------------------------------------------------------------------------
@@ -1205,14 +1223,6 @@
 
 #ifndef LIGHT_WARMWHITE_MIRED
 #define LIGHT_WARMWHITE_MIRED   500         // Warmwhite Strip, Value must be __ABOVE__ W1!! (Default: 2000 Kelvin/500 MiRed)
-#endif
-
-#ifndef LIGHT_COLDWHITE_KELVIN
-#define LIGHT_COLDWHITE_KELVIN  6536
-#endif
-
-#ifndef LIGHT_WARMWHITE_KELVIN
-#define LIGHT_WARMWHITE_KELVIN  2000
 #endif
 
 #ifndef LIGHT_STEP
@@ -1383,11 +1393,27 @@
 // -----------------------------------------------------------------------------
 
 #ifndef SCHEDULER_SUPPORT
-#define SCHEDULER_SUPPORT           1           // Enable scheduler (1.77Kb)
+#define SCHEDULER_SUPPORT           1               // Enable scheduler (2.45Kb)
 #endif
 
 #ifndef SCHEDULER_MAX_SCHEDULES
-#define SCHEDULER_MAX_SCHEDULES     10          // Max schedules alowed
+#define SCHEDULER_MAX_SCHEDULES     10              // Max schedules alowed
+#endif
+
+#ifndef SCHEDULER_RESTORE_LAST_SCHEDULE
+#define SCHEDULER_RESTORE_LAST_SCHEDULE      0  // Restore the last schedule state on the device boot
+#endif
+
+// -----------------------------------------------------------------------------
+// RPN RULES
+// -----------------------------------------------------------------------------
+
+#ifndef RPN_RULES_SUPPORT
+#define RPN_RULES_SUPPORT           0               // Enable RPN Rules (8.6Kb)
+#endif
+
+#ifndef RPN_DELAY
+#define RPN_DELAY                   100             // Execute rules after 100ms without messages
 #endif
 
 // -----------------------------------------------------------------------------
