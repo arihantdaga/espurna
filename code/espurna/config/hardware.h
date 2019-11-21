@@ -398,6 +398,7 @@
     #define DHT_SUPPORT         1
     #endif
     #define DHT_PIN             14
+    #define DHT_TYPE            DHT_CHIP_SI7021
 
     //#define I2C_SDA_PIN         4
     //#define I2C_SCL_PIN         14
@@ -3900,6 +3901,16 @@
     #define LED2_RELAY          1
     #define LED2_MODE           LED_MODE_FINDME_WIFI
 
+#elif defined(TUYA_GENERIC_DIMMER)
+
+    #define MANUFACTURER        "TUYA"
+    #define DEVICE              "GENERIC_DIMMER"
+
+    #define LIGHT_PROVIDER      LIGHT_PROVIDER_TUYA
+    #define LIGHT_CHANNELS      0
+    #define RELAY_PROVIDER      RELAY_PROVIDER_LIGHT
+    #define DUMMY_RELAY_COUNT   0
+
 // -----------------------------------------------------------------------------
 // Etekcity ESW01-USA 
 // https://www.amazon.com/Etekcity-Voltson-Outlet-Monitoring-Required/dp/B01M3MYIFS
@@ -4018,7 +4029,6 @@
     #define HLW8012_VOLTAGE_RATIO       313400
     #define HLW8012_POWER_RATIO         3711185
     #define HLW8012_INTERRUPT_ON        FALLING
-
 
 // -----------------------------------------------------------------------------
 // MUVIT_IO_MIOBULB001
