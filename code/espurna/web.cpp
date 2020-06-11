@@ -434,7 +434,47 @@ int _onCertificate(void * arg, const char *filename, uint8_t **buf) {
 
 }
 
-#endif // WEB_SSL_ENABLED
+#endif
+//WEB_SSL_ENABLED 
+
+void _onUpgradeData(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+
+    if (!index) {
+
+        // Disabling EEPROM rotation to prevent writing to EEPROM after the upgrade
+        eepromRotate(false);
+
+        DEBUG_MSG_P(PSTR("[UPGRADE] Start: %s\n"), filename.c_str());
+        Update.runAsync(true);
+        if (!Update.begin((ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000)) {
+            #ifdef DEBUG_PORT
+                Update.printError(DEBUG_PORT);
+            #endif
+        }
+
+    }
+
+    if (!Update.hasError()) {
+        if (Update.write(data, len) != len) {
+            #ifdef DEBUG_PORT
+                Update.printError(DEBUG_PORT);
+            #endif
+        }
+    }
+
+    if (final) {
+        if (Update.end(true)){
+            DEBUG_MSG_P(PSTR("[UPGRADE] Success:  %u bytes\n"), index + len);
+        } else {
+            #ifdef DEBUG_PORT
+                Update.printError(DEBUG_PORT);
+            #endif
+        }
+    } else {
+        //Removed to avoid websocket ping back during upgrade (see #1574)
+        //DEBUG_MSG_P(PSTR("[UPGRADE] Progress: %u bytes\r"), index + len);
+    }
+}
 
 bool _onAPModeRequest(AsyncWebServerRequest *request) {
 
