@@ -2,7 +2,6 @@ var debug = false;
 var websock;
 var password = false;
 var maxNetworks;
-var maxSchedules;
 var messages = [];
 var free_size = 0;
 
@@ -12,7 +11,8 @@ var numChanged = 0;
 var numReboot = 0;
 var numReconnect = 0;
 var numReload = 0;
-var conf_saved = false;
+var configurationSaved = false;
+var ws_pingpong;
 
 var useWhite = false;
 var useCCT = false;
@@ -26,7 +26,11 @@ var filters = [];
 <!-- endRemoveIf(!rfm69)-->
 
 <!-- removeIf(!sensor)-->
-var magnitudes = [];
+var Magnitudes = [];
+var MagnitudeErrors = {};
+var MagnitudeNames = {};
+var MagnitudeTypePrefixes = {};
+var MagnitudePrefixTypes = {};
 <!-- endRemoveIf(!sensor)-->
 
 // -----------------------------------------------------------------------------
@@ -44,52 +48,6 @@ function initMessages() {
     messages[9]  = "No changes detected";
     messages[10] = "Session expired, please reload page...";
 }
-
-<!-- removeIf(!sensor)-->
-function sensorName(id) {
-    var names = [
-        "DHT", "Dallas", "Emon Analog", "Emon ADC121", "Emon ADS1X15",
-        "HLW8012", "V9261F", "ECH1560", "Analog", "Digital",
-        "Events", "PMSX003", "BMX280", "MHZ19", "SI7021",
-        "SHT3X I2C", "BH1750", "PZEM004T", "AM2320 I2C", "GUVAS12SD",
-        "T6613", "TMP3X", "Sonar", "SenseAir", "GeigerTicks", "GeigerCPM",
-        "NTC", "SDS011", "MICS2710", "MICS5525", "VL53L1X", "VEML6075",
-        "EZOPH"
-    ];
-    if (1 <= id && id <= names.length) {
-        return names[id - 1];
-    }
-    return null;
-}
-
-function magnitudeType(type) {
-    var types = [
-        "Temperature", "Humidity", "Pressure",
-        "Current", "Voltage", "Active Power", "Apparent Power",
-        "Reactive Power", "Power Factor", "Energy", "Energy (delta)",
-        "Analog", "Digital", "Event",
-        "PM1.0", "PM2.5", "PM10", "CO2", "Lux", "UVA", "UVB", "UV Index", "Distance" , "HCHO",
-        "Local Dose Rate", "Local Dose Rate",
-        "Count",
-        "NO2", "CO", "Resistance", "pH"
-    ];
-    if (1 <= type && type <= types.length) {
-        return types[type - 1];
-    }
-    return null;
-}
-
-function magnitudeError(error) {
-    var errors = [
-        "OK", "Out of Range", "Warming Up", "Timeout", "Wrong ID",
-        "Data Error", "I2C Error", "GPIO Error", "Calibration error"
-    ];
-    if (0 <= error && error < errors.length) {
-        return errors[error];
-    }
-    return "Error " + error;
-}
-<!-- endRemoveIf(!sensor)-->
 
 // -----------------------------------------------------------------------------
 // Utils
@@ -121,11 +79,7 @@ function keepTime() {
 }
 
 function zeroPad(number, positions) {
-    var zeros = "";
-    for (var i = 0; i < positions; i++) {
-        zeros += "0";
-    }
-    return (zeros + number).slice(-positions);
+    return number.toString().padStart(positions, "0");
 }
 
 function loadTimeZones() {
@@ -142,15 +96,16 @@ function loadTimeZones() {
     ];
 
     for (var i in time_zones) {
-        var value = time_zones[i];
-        var offset = value >= 0 ? value : -value;
-        var text = "GMT" + (value >= 0 ? "+" : "-") +
+        var tz = time_zones[i];
+        var offset = tz >= 0 ? tz : -tz;
+        var text = "GMT" + (tz >= 0 ? "+" : "-") +
             zeroPad(parseInt(offset / 60, 10), 2) + ":" +
             zeroPad(offset % 60, 2);
         $("select[name='ntpOffset']").append(
-            $("<option></option>").
-                attr("value",value).
-                text(text));
+            $("<option></option>")
+                .attr("value", tz)
+                .text(text)
+        );
     }
 
 }
@@ -231,6 +186,60 @@ function validateForm(form) {
     return validateFormPasswords(form) && validateFormHostname(form);
 }
 
+// Observe all group settings to selectively update originals based on the current data
+var groupSettingsObserver = new MutationObserver(function(mutations) {
+    mutations.forEach(function(mutation) {
+        // If any new elements are added, set "settings-target" element as changed to forcibly send the data
+        var targets = $(mutation.target).attr("data-settings-target");
+        if (targets !== undefined) {
+            mutation.addedNodes.forEach(function(node) {
+                var overrides = [];
+                targets.split(" ").forEach(function(target) {
+                    var elem = $("[name='" + target + "']", node);
+                    if (!elem.length) return;
+
+                    var value = getValue(elem);
+                    if ((value === null) || (value === elem[0].defaultValue)) {
+                        overrides.push(elem);
+                    }
+                });
+                setOriginalsFromValues($("input,select", node));
+                overrides.forEach(function(elem) {
+                    elem.attr("hasChanged", "true");
+                    if (elem.prop("tagName") === "SELECT") {
+                        elem.prop("value", 0);
+                    }
+                });
+            });
+        }
+
+        // If anything was removed, forcibly send **all** of the group to avoid having any outdated keys
+        // TODO: hide instead of remove?
+        var changed = $(mutation.target).attr("hasChanged") === "true";
+        if (changed || mutation.removedNodes.length) {
+            $(mutation.target).attr("hasChanged", "true");
+            $("input,select", mutation.target.childNodes).attr("hasChanged", "true");
+        }
+    });
+});
+
+// These fields will always be a list of values
+function isGroupValue(value) {
+    var names = [
+        "ssid", "pass", "gw", "mask", "ip", "dns",
+        "schEnabled", "schSwitch","schAction","schType","schHour","schMinute","schWDs","schUTC",
+        "relayBoot", "relayPulse", "relayTime", "relayLastSch",
+        "mqttGroup", "mqttGroupSync", "relayOnDisc",
+        "dczRelayIdx", "dczMagnitude",
+        "tspkRelay", "tspkMagnitude",
+        "ledGPIO", "ledMode", "ledRelay",
+        "adminPass",
+        "node", "key", "topic",
+        "rpnRule", "rpnTopic", "rpnName"
+    ];
+    return names.indexOf(value) >= 0;
+}
+
 function getValue(element) {
 
     if ($(element).attr("type") === "checkbox") {
@@ -247,37 +256,12 @@ function getValue(element) {
 
 function addValue(data, name, value) {
 
-    // These fields will always be a list of values
-    var is_group = [
-        "ssid", "pass", "gw", "mask", "ip", "dns",
-        "schEnabled", "schSwitch","schAction","schType","schHour","schMinute","schWDs","schUTC",
-        "relayBoot", "relayPulse", "relayTime", "relayLastSch",
-        "mqttGroup", "mqttGroupSync", "relayOnDisc",
-        "dczRelayIdx", "dczMagnitude",
-        "tspkRelay", "tspkMagnitude",
-        "ledMode", "ledRelay",
-        "adminPass",
-        "node", "key", "topic",
-        "rpnRule", "rpnTopic", "rpnName"
-    ];
-
-
-    // join both adminPass 1 and 2
-    if (name.startsWith("adminPass")) {
-        name = "adminPass";
-    }
-
-    // join all relayLastSch values
-    if (name.startsWith("relayLastSch")) {
-        name = "relayLastSch";
-    }
-
     if (name in data) {
         if (!Array.isArray(data[name])) {
             data[name] = [data[name]];
         }
         data[name].push(value);
-    } else if (is_group.indexOf(name) >= 0) {
+    } else if (isGroupValue(name)) {
         data[name] = [value];
     } else {
         data[name] = value;
@@ -285,25 +269,71 @@ function addValue(data, name, value) {
 
 }
 
-function getData(form) {
+function getData(form, changed, cleanup) {
 
+    // Populate two sets of data, ones that had been changed and ones that stayed the same
     var data = {};
+    var changed_data = [];
+    if (cleanup === undefined) {
+        cleanup = true;
+    }
 
-    // Populate data
+    if (changed === undefined) {
+        changed = true;
+    }
+
     $("input,select", form).each(function() {
+        if ($(this).attr("data-settings-ignore") === "true") {
+            return;
+        }
+
         var name = $(this).attr("name");
+
+        var real_name = $(this).attr("data-settings-real-name");
+        if (real_name !== undefined) {
+            name = real_name;
+        }
+
         var value = getValue(this);
         if (null !== value) {
+            var haschanged = ("true" === $(this).attr("hasChanged"));
+            var indexed = changed_data.indexOf(name) >= 0;
+
+            if ((haschanged || !changed) && !indexed) {
+                changed_data.push(name);
+            }
+
             addValue(data, name, value);
         }
     });
 
-    // Post process
-    addValue(data, "schSwitch", 0xFF);
-    delete data["filename"];
-    delete data["rfbcode"];
+    // Finally, filter out only fields that had changed.
+    // Note: We need to preserve dynamic lists like schedules, wifi etc.
+    // so we don't accidentally break when user deletes entry in the middle
+    var resulting_data = {};
+    for (var value in data) {
+        if (changed_data.indexOf(value) >= 0) {
+            resulting_data[value] = data[value];
+        }
+    }
 
-    return data;
+    // Hack: clean-up leftover arrays.
+    // When empty, the receiving side will prune all keys greater than the current one.
+    if (cleanup) {
+        $(".group-settings").each(function() {
+            var haschanged = ("true" === $(this).attr("hasChanged"));
+            if (haschanged && !this.children.length) {
+                var targets = this.dataset.settingsTarget;
+                if (targets === undefined) return;
+
+                targets.split(" ").forEach(function(target) {
+                    resulting_data[target] = [];
+                });
+            }
+        });
+    }
+
+    return resulting_data;
 
 }
 
@@ -338,6 +368,7 @@ function generateAPIKey() {
     var apikey = randomString(16, {hex: true});
     $("input[name='apiKey']")
         .val(apikey)
+        .attr("original", "-".repeat(16))
         .attr("haschanged", "true");
     return false;
 }
@@ -362,7 +393,8 @@ function toggleVisiblePassword() {
 }
 
 function doGeneratePassword() {
-    $("input", $("#formPassword"))
+    var elems = $("input", $("#formPassword"));
+    elems
         .val(generatePassword())
         .attr("haschanged", "true")
         .each(function() {
@@ -377,6 +409,15 @@ function getJson(str) {
     } catch (e) {
         return false;
     }
+}
+
+function moduleVisible(module) {
+    if (module == "sch") {
+        $("li.module-" + module).css("display", "inherit");
+        $("div.module-" + module).css("display", "flex");
+        return;
+    }
+    $(".module-" + module).css("display", "inherit");
 }
 
 <!-- removeIf(!thermostat)-->
@@ -404,31 +445,23 @@ function doResetThermostatCounters(ask) {
 }
 <!-- endRemoveIf(!thermostat)-->
 
-function initGPIO(node, name, key, value) {
-
-    var template = $("#gpioConfigTemplate").children();
-    var line = $(template).clone();
-    $("span.id", line).html(value);
-    $("select", line).attr("name", key);
-    line.appendTo(node);
-
-}
-
 function initSelectGPIO(select) {
-    // TODO: cross-check used GPIOs
-    // TODO: support 9 & 10 with esp8285 variant
+    // TODO: properly lock used GPIOs via locking and apply the mask here
     var mapping = [
         [153, "NONE"],
-        [0, "0"],
+        [0, "0 (FLASH)"],
         [1, "1 (U0TXD)"],
         [2, "2 (U1TXD)"],
         [3, "3 (U0RXD)"],
-        [4, "4"],
-        [5, "5"],
+        [4, "4 (SDA)"],
+        [5, "5 (SCL)"],
+        [9, "9 (SDD2)"],
+        [10, "10 (SDD3)"],
         [12, "12 (MTDI)"],
         [13, "13 (MTCK)"],
         [14, "14 (MTMS)"],
         [15, "15 (MTDO)"],
+        [16, "16 (WAKE)"],
     ];
     for (n in mapping) {
         var elem = $('<option value="' + mapping[n][0] + '">');
@@ -455,27 +488,27 @@ function sendConfig(data) {
     send(JSON.stringify({config: data}));
 }
 
-function setOriginalsFromValues(force) {
-    force = (true === force);
-    $("input,select").each(function() {
-        var initial = (undefined === $(this).attr("original"));
-        if (force || initial) {
-            var value;
-            if ($(this).attr("type") === "checkbox") {
-                value = $(this).prop("checked");
-            } else {
-                value = $(this).val();
-            }
-            $(this).attr("original", value);
-            hasChanged.call(this);
+function setOriginalsFromValues(elems) {
+    if (typeof elems == "undefined") {
+        elems = $("input,select");
+    }
+    elems.each(function() {
+        var value;
+        if ($(this).attr("type") === "checkbox") {
+            value = $(this).prop("checked");
+        } else {
+            value = $(this).val();
         }
+        $(this).attr("original", value);
+        hasChanged.call(this);
     });
 }
 
 function resetOriginals() {
-    setOriginalsFromValues(true);
+    setOriginalsFromValues();
+    $(".group-settings").attr("haschanged", "false")
     numReboot = numReconnect = numReload = 0;
-    conf_saved = false;
+    configurationSaved = false;
 }
 
 function doReload(milliseconds) {
@@ -496,9 +529,22 @@ function checkFirmware(file, callback) {
 
     reader.onloadend = function(evt) {
         if (FileReader.DONE === evt.target.readyState) {
-            if (0xE9 !== evt.target.result.charCodeAt(0)) callback(false);
-            if (0x03 !== evt.target.result.charCodeAt(2)) {
-                var response = window.confirm("Binary image is not using DOUT flash mode. This might cause resets in some devices. Press OK to continue.");
+            var magic = evt.target.result.charCodeAt(0);
+            if ((0x1F === magic) && (0x8B === evt.target.result.charCodeAt(1))) {
+                callback(true);
+                return;
+            }
+
+            if (0xE9 !== magic) {
+                alert("Binary image does not start with a magic byte");
+                callback(false);
+                return;
+            }
+
+            var modes = ['QIO', 'QOUT', 'DIO', 'DOUT'];
+            var flash_mode = evt.target.result.charCodeAt(2);
+            if (0x03 !== flash_mode) {
+                var response = window.confirm("Binary image is using " + modes[flash_mode] + " flash mode! Make sure that the device supports it before proceeding.");
                 callback(response);
             } else {
                 callback(true);
@@ -528,7 +574,6 @@ function doUpgrade() {
     checkFirmware(file, function(ok) {
 
         if (!ok) {
-            alert("The file does not seem to be a valid firmware image.");
             return;
         }
 
@@ -537,8 +582,11 @@ function doUpgrade() {
 
         var xhr = new XMLHttpRequest();
 
-        var network_error = function() {
-            alert("There was a network error trying to upload the new image, please try again.");
+        var msg_ok = "Firmware image uploaded, board rebooting. This page will be refreshed in 5 seconds.";
+        var msg_err = "There was an error trying to upload the new image, please try again: ";
+
+        var network_error = function(e) {
+            alert(msg_err + " xhr request " + e.type);
         };
         xhr.addEventListener("error", network_error, false);
         xhr.addEventListener("abort", network_error, false);
@@ -546,12 +594,10 @@ function doUpgrade() {
         xhr.addEventListener("load", function(e) {
             $("#upgrade-progress").hide();
             if ("OK" === xhr.responseText) {
-                alert("Firmware image uploaded, board rebooting. This page will be refreshed in 5 seconds.");
+                alert(msg_ok);
                 doReload(5000);
             } else {
-                alert("There was an error trying to upload the new image, please try again ("
-                    + "response: " + xhr.responseText + ", "
-                    + "status: " + xhr.statusText + ")");
+                alert(msg_err + xhr.status.toString() + " " + xhr.statusText + ", " + xhr.responseText);
             }
         }, false);
 
@@ -574,7 +620,7 @@ function doUpgrade() {
 function doUpdatePassword() {
     var form = $("#formPassword");
     if (validateFormPasswords(form)) {
-        sendConfig(getData(form));
+        sendConfig(getData(form, true, false));
     }
     return false;
 }
@@ -643,7 +689,7 @@ function doCheckOriginals() {
 }
 
 function waitForSave(){
-    if (conf_saved == false) {
+    if (!configurationSaved) {
         setTimeout(waitForSave, 1000);
     } else {
         doCheckOriginals();
@@ -720,7 +766,7 @@ function doRestore() {
 
 function doFactoryReset() {
     var response = window.confirm("Are you sure you want to restore to factory settings?");
-    if (response === false) {
+    if (!response) {
         return false;
     }
     sendAction("factory_reset", {});
@@ -847,6 +893,7 @@ function createRelayList(data, container, template_name) {
         var line = $(template).clone();
         $("label", line).html("Switch #" + i);
         $("input", line).attr("tabindex", 40 + i).val(data[i]);
+        setOriginalsFromValues($("input", line));
         line.appendTo("#" + container);
     }
 
@@ -863,9 +910,10 @@ function createMagnitudeList(data, container, template_name) {
 
     for (var i=0; i<size; ++i) {
         var line = $(template).clone();
-        $("label", line).html(magnitudeType(data.type[i]) + " #" + parseInt(data.index[i], 10));
-        $("div.hint", line).html(magnitudes[i].description);
+        $("label", line).html(MagnitudeNames[data.type[i]] + " #" + parseInt(data.index[i], 10));
+        $("div.hint", line).html(Magnitudes[i].description);
         $("input", line).attr("tabindex", 40 + i).val(data.idx[i]);
+        setOriginalsFromValues($("input", line));
         line.appendTo("#" + container);
     }
 
@@ -884,6 +932,7 @@ function addRPNRule() {
         $(this).attr("tabindex", tabindex++);
     });
     $(line).find("button").on('click', delParent);
+    setOriginalsFromValues($("input", line));
     line.appendTo("#rpnRules");
 }
 
@@ -895,6 +944,7 @@ function addRPNTopic() {
         $(this).attr("tabindex", tabindex++);
     });
     $(line).find("button").on('click', delParent);
+    setOriginalsFromValues($("input", line));
     line.appendTo("#rpnTopics");
 }
 
@@ -912,6 +962,7 @@ function addMapping() {
         $(this).attr("tabindex", tabindex++);
     });
     $(line).find("button").on('click', delParent);
+    setOriginalsFromValues($("input", line));
     line.appendTo("#mapping");
 }
 
@@ -920,6 +971,10 @@ function addMapping() {
 // -----------------------------------------------------------------------------
 // Wifi
 // -----------------------------------------------------------------------------
+
+function numNetworks() {
+    return $("#networks > div").length;
+}
 
 function delNetwork() {
     var parent = $(this).parents(".pure-g");
@@ -931,15 +986,19 @@ function moreNetwork() {
     $(".more", parent).toggle();
 }
 
-function addNetwork() {
+function addNetwork(network) {
 
-    var numNetworks = $("#networks > div").length;
-    if (numNetworks >= maxNetworks) {
+    var number = numNetworks();
+    if (number >= maxNetworks) {
         alert("Max number of networks reached");
         return null;
     }
 
-    var tabindex = 200 + numNetworks * 10;
+    if (network === undefined) {
+        network = {};
+    }
+
+    var tabindex = 200 + number * 10;
     var template = $("#networkTemplate").children();
     var line = $(template).clone();
     $(line).find("input").each(function() {
@@ -949,6 +1008,19 @@ function addNetwork() {
     $(".password-reveal", line).on("click", toggleVisiblePassword);
     $(line).find(".button-del-network").on("click", delNetwork);
     $(line).find(".button-more-network").on("click", moreNetwork);
+
+    Object.entries(network).forEach(function(pair) {
+        // XXX: UI deleting this network will only re-use stored values.
+        var key = pair[0],
+            val = pair[1];
+        if (key === "stored") {
+            $(line).find(".button-del-network").prop("disabled", val);
+            return;
+        }
+        $("input[name='" + key + "']", line).val(val);
+    });
+
+
     line.appendTo("#networks");
 
     return line;
@@ -958,6 +1030,15 @@ function addNetwork() {
 // -----------------------------------------------------------------------------
 // Relays scheduler
 // -----------------------------------------------------------------------------
+
+function numSchedules() {
+    return $("#schedules > div").length;
+}
+
+function maxSchedules() {
+    var value = $("#schedules").attr("data-settings-max");
+    return parseInt(value === undefined ? 0 : value, 10);
+}
 
 function delSchedule() {
     var parent = $(this).parents(".pure-g");
@@ -969,22 +1050,37 @@ function moreSchedule() {
     $("div.more", parent).toggle();
 }
 
-function addSchedule(event) {
+function addSchedule(values) {
 
-    var numSchedules = $("#schedules > div").length;
-    if (numSchedules >= maxSchedules) {
+    var schedules = numSchedules();
+    if (schedules >= maxSchedules()) {
         alert("Max number of schedules reached");
         return null;
     }
-    var tabindex = 200 + numSchedules * 10;
+
+    if (values === undefined) {
+        values = {};
+    }
+
+    var tabindex = 200 + schedules * 10;
     var template = $("#scheduleTemplate").children();
     var line = $(template).clone();
 
-    var type = (1 === event.data.schType) ? "switch" : "light";
+    var type = "none";
+    switch(values.schType) {
+        case 1:
+            type = "switch";
+            break;
+        case 2:
+            type = "light";
+            break;
+        case 3:
+            type = "curtain";
+            break;
+    }
 
     template = $("#" + type + "ActionTemplate").children();
-    var actionLine = template.clone();
-    $(line).find("#schActionDiv").append(actionLine);
+    $(line).find("#schActionDiv").append(template.clone());
 
     $(line).find("input").each(function() {
         $(this).attr("tabindex", tabindex);
@@ -992,12 +1088,22 @@ function addSchedule(event) {
     });
     $(line).find(".button-del-schedule").on("click", delSchedule);
     $(line).find(".button-more-schedule").on("click", moreSchedule);
-    $(line).find("input[name='schUTC']").prop("id", "schUTC" + (numSchedules + 1))
-        .next().prop("for", "schUTC" + (numSchedules + 1));
-    $(line).find("input[name='schEnabled']").prop("id", "schEnabled" + (numSchedules + 1))
-        .next().prop("for", "schEnabled" + (numSchedules + 1));
-    line.appendTo("#schedules");
+
+    var schUTC_id = "schUTC" + schedules;
+    $(line).find("input[name='schUTC']").prop("id", schUTC_id).next().prop("for", schUTC_id);
+
+    var schEnabled_id = "schEnabled" + schedules;
+    $(line).find("input[name='schEnabled']").prop("id", schEnabled_id).next().prop("for", schEnabled_id);
+
     $(line).find("input[type='checkbox']").prop("checked", false);
+
+    Object.entries(values).forEach(function(kv) {
+        var key = kv[0], value = kv[1];
+        $("input[name='" + key + "']", line).val(value);
+        $("select[name='" + key + "']", line).prop("value", value);
+        $("input[type='checkbox'][name='" + key + "']", line).prop("checked", value);
+    });
+    line.appendTo("#schedules");
 
     return line;
 
@@ -1027,10 +1133,6 @@ function initRelays(data) {
             });
         $("label.toggle", line).prop("for", "relay" + i)
         line.appendTo("#relays");
-
-        // Populate the relay SELECTs
-        $("select.isrelay").append(
-            $("<option></option>").attr("value",i).text("Switch #" + i));
 
     }
 
@@ -1080,10 +1182,14 @@ function initRelayConfig(data) {
         $("select[name='relayBoot']", line).val(data.boot[i]);
         $("select[name='relayPulse']", line).val(data.pulse[i]);
         $("input[name='relayTime']", line).val(data.pulse_time[i]);
-        $("input[name='relayLastSch']", line).prop('checked', data.sch_last[i]);
-        $("input[name='relayLastSch']", line).attr("id", "relayLastSch" + i);
-        $("input[name='relayLastSch']", line).attr("name", "relayLastSch" + i);
-        $("input[name='relayLastSch" + i + "']", line).next().attr("for","relayLastSch" + (i));
+
+        if ("sch_last" in data) {
+            $("input[name='relayLastSch']", line)
+                .prop('checked', data.sch_last[i])
+                .attr("id", "relayLastSch" + i)
+                .attr("name", "relayLastSch" + i)
+                .next().attr("for","relayLastSch" + (i));
+        }
 
         if ("group" in data) {
             $("input[name='mqttGroup']", line).val(data.group[i]);
@@ -1095,24 +1201,16 @@ function initRelayConfig(data) {
             $("select[name='relayOnDisc']", line).val(data.on_disc[i]);
         }
 
+        setOriginalsFromValues($("input,select", line));
         line.appendTo("#relayConfig");
-    }
 
-}
+        // Populate the relay SELECTs
+        $("select.isrelay").append(
+            $("<option></option>")
+                .attr("value", i)
+                .text("Switch #" + i)
+        );
 
-function initLeds(data) {
-
-    var current = $("#ledConfig > div").length;
-    if (current > 0) { return; }
-
-    var size = data.length;
-    var template = $("#ledConfigTemplate").children();
-    for (var i=0; i<size; ++i) {
-        var line = $(template).clone();
-        $("span.id", line).html(i);
-        $("select", line).attr("data", i);
-        $("input", line).attr("data", i);
-        line.appendTo("#ledConfig");
     }
 
 }
@@ -1135,21 +1233,78 @@ function initMagnitudes(data) {
 
     for (var i=0; i<size; ++i) {
         var magnitude = {
-            "name": magnitudeType(data.type[i]) + " #" + parseInt(data.index[i], 10),
+            "name": MagnitudeNames[data.type[i]] + " #" + parseInt(data.index[i], 10),
             "units": data.units[i],
             "description": data.description[i]
         };
-        magnitudes.push(magnitude);
+        Magnitudes.push(magnitude);
 
         var line = $(template).clone();
         $("label", line).html(magnitude.name);
-        $("div.hint", line).html(magnitude.description);
         $("input", line).attr("data", i);
+        $("div.sns-desc", line).html(magnitude.description);
+        $("div.sns-info", line).hide();
         line.appendTo("#magnitudes");
     }
 
 }
 <!-- endRemoveIf(!sensor)-->
+
+// -----------------------------------------------------------------------------
+// Curtains
+// -----------------------------------------------------------------------------
+
+<!-- removeIf(!curtain)-->
+
+//Create the controls for one curtain. It is called when curtain is updated (so created the first time)
+//Let this there as we plan to have more than one curtain per switch
+function initCurtain(data) {
+
+    var current = $("#curtains > div").length;
+    if (current > 0) { return; }
+  
+    // add curtain template (prepare multi switches)
+    var template = $("#curtainTemplate").children();
+    var line = $(template).clone();
+    // init curtain button
+    $(line).find(".button-curtain-open").on("click", function() {
+        sendAction("curtainAction", {button: 1});
+        $(this).css('background', 'red');
+    });    
+    $(line).find(".button-curtain-pause").on("click", function() {
+        sendAction("curtainAction", {button: 0});
+        $(this).css('background', 'red');
+    });    
+    $(line).find(".button-curtain-close").on("click", function() {
+        sendAction("curtainAction", {button: 2});
+        $(this).css('background', 'red');
+    });    
+    line.appendTo("#curtains");
+
+    // init curtain slider
+    $("#curtainSet").on("change", function() {
+        var value = $(this).val();
+        var parent = $(this).parents(".pure-g");
+        $("span", parent).html(value);
+        sendAction("curtainAction", {position: value});
+    });
+
+}
+
+function initCurtainConfig(data) {
+
+    var current = $("#curtainConfig > legend").length; // there is a legend per relay
+    if (current > 0) { return; }
+
+    // Populate the curtain select
+    $("select.iscurtain").append(
+        $("<option></option>")
+            .attr("value", "0")
+            .text("Curtain #" + "0")
+    );
+}
+
+<!-- endRemoveIf(!curtain)-->
 
 // -----------------------------------------------------------------------------
 // Lights
@@ -1171,7 +1326,7 @@ function getPickerRGB(picker) {
     return $(picker).wheelColorPicker("getValue", "css");
 }
 
-function setPickerRGB(picker, color) {
+function setPickerRGB(picker, value) {
     $(picker).wheelColorPicker("setValue", value, true);
 }
 
@@ -1334,12 +1489,9 @@ function addRfbNode() {
 
     var template = $("#rfbNodeTemplate").children();
     var line = $(template).clone();
-    var status = true;
     $("span", line).html(numNodes);
     $(line).find("input").each(function() {
-        $(this).attr("data-id", numNodes);
-        $(this).attr("data-status", status ? 1 : 0);
-        status = !status;
+        this.dataset["id"] = numNodes;
     });
     $(line).find(".button-rfb-learn").on("click", rfbLearn);
     $(line).find(".button-rfb-forget").on("click", rfbForget);
@@ -1382,6 +1534,7 @@ function initLightfox(data, relayCount) {
             $(this).val(data[i]["relay"]);
             status = !status;
         });
+        setOriginalsFromValues($("input,select", $line));
         $line.appendTo("#lightfoxNodes");
     }
 
@@ -1478,7 +1631,7 @@ function processData(data) {
             return;
         }
 
-        <!-- endRemoveIf(!rfbridge)-->
+        <!-- endRemoveIf(!lightfox)-->
 
         // ---------------------------------------------------------------------
         // RFM69
@@ -1504,22 +1657,24 @@ function processData(data) {
         }
 
         if (key == "mapping") {
-			for (var i in data.mapping) {
+            for (var i in data.mapping) {
 
-				// add a new row
-				addMapping();
+                // add a new row
+                addMapping();
 
-				// get group
-				var line = $("#mapping .pure-g")[i];
+                // get group
+                var line = $("#mapping .pure-g")[i];
 
-				// fill in the blanks
-				var mapping = data.mapping[i];
-				Object.keys(mapping).forEach(function(key) {
-				    var id = "input[name=" + key + "]";
-				    if ($(id, line).length) $(id, line).val(mapping[key]).attr("original", mapping[key]);
-				});
-			}
-			return;
+                // fill in the blanks
+                var mapping = data.mapping[i];
+                Object.keys(mapping).forEach(function(key) {
+                    var id = "input[name=" + key + "]";
+                    if ($(id, line).length) $(id, line).val(mapping[key]);
+                });
+
+                setOriginalsFromValues($("input", line));
+            }
+            return;
         }
 
         <!-- endRemoveIf(!rfm69)-->
@@ -1539,7 +1694,9 @@ function processData(data) {
 
 				// fill in the blanks
 				var rule = data.rpnRules[i];
-                $("input", line).val(rule).attr("original", rule);
+                $("input", line).val(rule);
+
+                setOriginalsFromValues($("input", line));
 
             }
 			return;
@@ -1557,14 +1714,64 @@ function processData(data) {
 				// fill in the blanks
 				var topic = data.rpnTopics[i];
 				var name = data.rpnNames[i];
-                $("input[name='rpnTopic']", line).val(topic).attr("original", topic);
-                $("input[name='rpnName']", line).val(name).attr("original", name);
+                $("input[name='rpnTopic']", line).val(topic);
+                $("input[name='rpnName']", line).val(name);
+
+                setOriginalsFromValues($("input", line));
 
             }
 			return;
         }
         
         if (key == "rpnNames") return;
+
+        // ---------------------------------------------------------------------
+        // Curtains
+        // ---------------------------------------------------------------------
+
+        <!-- removeIf(!curtain)-->
+
+        function applyCurtain(a, b) {
+            $("#curtainGetPicture").css('background', 'linear-gradient(' + a + ', black ' + b + '%, #a0d6ff ' + b + '%)');
+        }
+
+        if ("curtainState" === key) {
+            initCurtain();
+            switch(value.type) {
+                case '0': //Roller
+                default:
+                    applyCurtain('180deg', value.get);
+                    break;
+                case '1': //One side left to right
+                    applyCurtain('90deg', value.get);
+                    break;
+                case '2': //One side right to left
+                    applyCurtain('270deg', value.get);
+                    break;
+                case '3': //Two sides
+                    $("#curtainGetPicture").css('background', 'linear-gradient(90deg, black ' + value.get/2 + '%, #a0d6ff ' + value.get/2 + '% ' + (100 - value.get/2) + '%, black ' + (100 - value.get/2) + '%)');
+                    break;
+            }
+            $("#curtainSet").val(value.set);
+
+            if(!value.moving) { 
+                $("button.curtain-button").css('background', 'rgb(66, 184, 221)');
+            } else {
+                if(!value.button)
+                    $("button.button-curtain-pause").css('background', 'rgb(192, 0, 0)');
+                else if(value.button == 1) {
+                    $("button.button-curtain-close").css('background', 'rgb(66, 184, 221)');
+                    $("button.button-curtain-open").css('background', 'rgb(192, 0, 0)');
+                }
+                else if(value.button == 2) {
+                    $("button.button-curtain-open").css('background', 'rgb(66, 184, 221)');
+                    $("button.button-curtain-close").css('background', 'rgb(192, 0, 0)');
+
+                }
+            }
+            return;
+        }
+        <!-- endRemoveIf(!curtain)-->
 
         // ---------------------------------------------------------------------
         // Lights
@@ -1626,18 +1833,66 @@ function processData(data) {
 
         <!-- removeIf(!sensor)-->
 
+        {
+            var position = key.indexOf("Correction");
+            if (position > 0 && position === key.length - 10) {
+                var template = $("#magnitudeCorrectionTemplate > div")[0];
+                var elem = $(template).clone();
+
+                var prefix = key.slice(0, position);
+                $("label", elem).html(MagnitudeNames[MagnitudePrefixTypes[prefix]]);
+                $("input", elem).attr("name", key).val(value);
+
+                setOriginalsFromValues($("input", elem));
+                elem.appendTo("#magnitude-corrections");
+                moduleVisible("magnitude-corrections");
+                return;
+            }
+        }
+
+        if ("snsErrors" === key) {
+            for (var index in value) {
+                var type = value[index][0];
+                var name = value[index][1];
+                MagnitudeErrors[type] = name;
+            }
+            return;
+        }
+
+        if ("snsMagnitudes" === key) {
+            for (var index in value) {
+                var type = value[index][0];
+                var prefix = value[index][1];
+                var name = value[index][2];
+                MagnitudeNames[type] = name;
+                MagnitudeTypePrefixes[type] = prefix;
+                MagnitudePrefixTypes[prefix] = type;
+                moduleVisible(prefix);
+            }
+            return;
+        }
+
         if ("magnitudesConfig" === key) {
             initMagnitudes(value);
+            return;
         }
 
         if ("magnitudes" === key) {
             for (var i=0; i<value.size; ++i) {
+                var inputElem = $("input[name='magnitude'][data='" + i + "']");
+                var infoElem = inputElem.parent().parent().find("div.sns-info");
+
                 var error = value.error[i] || 0;
-                var text = (0 === error) ?
-                    value.value[i] + magnitudes[i].units :
-                    magnitudeError(error);
-                var element = $("input[name='magnitude'][data='" + i + "']");
-                element.val(text);
+                var text = (0 === error)
+                    ? value.value[i] + Magnitudes[i].units
+                    : MagnitudeErrors[error];
+                inputElem.val(text);
+
+                if (value.info !== undefined) {
+                    var info = value.info[i] || 0;
+                    infoElem.toggle(info != 0);
+                    infoElem.text(info);
+                }
             }
             return;
         }
@@ -1648,19 +1903,21 @@ function processData(data) {
         // WiFi
         // ---------------------------------------------------------------------
 
-        if ("maxNetworks" === key) {
-            maxNetworks = parseInt(value, 10);
-            return;
-        }
-
         if ("wifi" === key) {
-            for (i in value) {
-                var wifi = value[i];
-                var nwk_line = addNetwork();
-                Object.keys(wifi).forEach(function(key) {
-                    $("input[name='" + key + "']", nwk_line).val(wifi[key]);
+            maxNetworks = parseInt(value["max"], 10);
+            value["networks"].forEach(function(network) {
+                var schema = value["schema"];
+                if (schema.length !== network.length) {
+                    throw "WiFi schema mismatch!";
+                }
+
+                var _network = {};
+                schema.forEach(function(key, index) {
+                    _network[key] = network[index];
                 });
-            }
+
+                addNetwork(_network);
+            });
             return;
         }
 
@@ -1685,22 +1942,17 @@ function processData(data) {
         // Relays scheduler
         // -----------------------------------------------------------------------------
 
-        if ("maxSchedules" === key) {
-            maxSchedules = parseInt(value, 10);
-            return;
-        }
-
         if ("schedules" === key) {
+            $("#schedules").attr("data-settings-max", value.max);
             for (var i=0; i<value.size; ++i) {
-                var sch_line = addSchedule({ data: {schType: value.schType[i] }});
-
+                // XXX: no
+                var sch_map = {};
                 Object.keys(value).forEach(function(key) {
                     if ("size" == key) return;
-                    var sch_value = value[key][i];
-                    $("input[name='" + key + "']", sch_line).val(sch_value);
-                    $("select[name='" + key + "']", sch_line).prop("value", sch_value);
-                    $("input[type='checkbox'][name='" + key + "']", sch_line).prop("checked", sch_value);
+                    if ("max" == key) return;
+                    sch_map[key] = value[key][i];
                 });
+                addSchedule(sch_map);
             }
             return;
         }
@@ -1722,15 +1974,56 @@ function processData(data) {
         }
 
         // ---------------------------------------------------------------------
+        // Curtain(s)
+        // ---------------------------------------------------------------------
+
+        <!-- removeIf(!curtain)-->
+
+        // Relay configuration
+        if ("curtainConfig" === key) {
+            initCurtainConfig(value);
+            return;
+        }
+
+        <!-- endRemoveIf(!curtain)-->
+
+
+
+        // ---------------------------------------------------------------------
         // LEDs
         // ---------------------------------------------------------------------
 
-        if ("ledConfig" === key) {
-            initLeds(value);
-            for (var i=0; i<value.length; ++i) {
-                $("select[name='ledMode'][data='" + i + "']").val(value[i].mode);
-                $("input[name='ledRelay'][data='" + i + "']").val(value[i].relay);
-            }
+        if ("led" === key) {
+            if($("#ledConfig > div").length > 0) return;
+
+            var schema = value["schema"];
+            value["list"].forEach(function(led_data, index) {
+                if (schema.length !== led_data.length) {
+                    throw "LED schema mismatch!";
+                }
+
+                var led = {};
+                schema.forEach(function(key, index) {
+                    led[key] = led_data[index];
+                });
+
+                var line = $($("#ledConfigTemplate").children()).clone();
+
+                $("span.id", line).html(index);
+                $("select", line).attr("data", index);
+                $("input", line).attr("data", index);
+
+                $("select[name='ledGPIO']", line).val(led.GPIO);
+                // XXX: checkbox implementation depends on unique id
+                // $("input[name='ledInv']", line).val(led.Inv);
+                $("select[name='ledMode']", line).val(led.Mode);
+                $("input[name='ledRelay']", line).val(led.Relay);
+
+                setOriginalsFromValues($("input,select", line));
+
+                line.appendTo("#ledConfig");
+            });
+
             return;
         }
 
@@ -1787,8 +2080,8 @@ function processData(data) {
 
         // Messages
         if ("message" === key) {
-            if (value == 8 && (numReboot > 0 || numReload > 0 || numReconnect > 0)){
-                conf_saved = true;
+            if (value == 8) {
+                configurationSaved = true;
             }
             window.alert(messages[value]);
             return;
@@ -1798,8 +2091,8 @@ function processData(data) {
         if ("weblog" === key) {
             send("{}");
 
-            msg = value["msg"];
-            pre = value["pre"];
+            var msg = value["msg"];
+            var pre = value["pre"];
 
             for (var i=0; i < msg.length; ++i) {
                 if (pre[i]) {
@@ -1816,12 +2109,7 @@ function processData(data) {
         var position = key.indexOf("Visible");
         if (position > 0 && position === key.length - 7) {
             var module = key.slice(0,-7);
-            if (module == "sch") {
-                $("li.module-" + module).css("display", "inherit");
-                $("div.module-" + module).css("display", "flex");
-                return;
-            }
-            $(".module-" + module).css("display", "inherit");
+            moduleVisible(module);
             return;
         }
 
@@ -1858,13 +2146,14 @@ function processData(data) {
         }
         <!-- removeIf(!thermostat)-->
         if ("tmpUnits" == key) {
-            $("span.tmpUnit").html(data[key] == 1 ? "ºF" : "ºC");
+            $("span.tmpUnit").html(data[key] == 3 ? "ºF" : "ºC");
         }
         <!-- endRemoveIf(!thermostat)-->
 
         // ---------------------------------------------------------------------
         // Matching
         // ---------------------------------------------------------------------
+        var elems = [];
 
         var pre;
         var post;
@@ -1881,6 +2170,7 @@ function processData(data) {
                 post = input.attr("post") || "";
                 input.val(pre + value + post);
             }
+            elems.push(input);
         }
 
         // Look for SPANs
@@ -1890,11 +2180,13 @@ function processData(data) {
                 value.forEach(function(elem) {
                     span.append(elem);
                     span.append('</br>');
+                    elems.push(span);
                 });
             } else {
                 pre = span.attr("pre") || "";
                 post = span.attr("post") || "";
                 span.html(pre + value + post);
+                elems.push(span);
             }
         }
 
@@ -1902,11 +2194,12 @@ function processData(data) {
         var select = $("select[name='" + key + "']");
         if (select.length > 0) {
             select.val(value);
+            elems.push(select);
         }
 
-    });
+        setOriginalsFromValues($(elems));
 
-    setOriginalsFromValues();
+    });
 
 }
 
@@ -1932,16 +2225,16 @@ function hasChanged() {
             if ("reconnect" === action) { ++numReconnect; }
             if ("reboot" === action) { ++numReboot; }
             if ("reload" === action) { ++numReload; }
-            $(this).attr("hasChanged", true);
         }
+        $(this).attr("hasChanged", true);
     } else {
         if (hasChanged) {
             --numChanged;
             if ("reconnect" === action) { --numReconnect; }
             if ("reboot" === action) { --numReboot; }
             if ("reload" === action) { --numReload; }
-            $(this).attr("hasChanged", false);
         }
+        $(this).attr("hasChanged", false);
     }
 
 }
@@ -1991,6 +2284,16 @@ function connectToURL(url) {
                 processData(data);
             }
         };
+        websock.onclose = function(evt) {
+            clearInterval(ws_pingpong);
+            if (window.confirm("Connection lost with the device, click OK to refresh the page")) {
+                $("#layout").toggle(false);
+                window.location.reload();
+            }
+        }
+        websock.onopen = function(evt) {
+            ws_pingpong = setInterval(function() { sendAction("ping", {}); }, 5000);
+        }
     }).catch(function(error) {
         console.log(error);
         doReload(5000);
@@ -2054,10 +2357,21 @@ $(function() {
     $(".button-add-network").on("click", function() {
         $(".more", addNetwork()).toggle();
     });
-    $(".button-add-switch-schedule").on("click", { schType: 1 }, addSchedule);
+
+    $(".button-add-switch-schedule").on("click", function() {
+        addSchedule({schType: 1, schSwitch: -1});
+    });
     <!-- removeIf(!light)-->
-    $(".button-add-light-schedule").on("click", { schType: 2 }, addSchedule);
+    $(".button-add-light-schedule").on("click", function() {
+        addSchedule({schType: 2, schSwitch: -1});
+    });
     <!-- endRemoveIf(!light)-->
+
+    <!-- removeIf(!curtain)-->
+    $(".button-add-curtain-schedule").on("click", function() {
+        addSchedule({schType: 3, schSwitch: -1});
+    });
+    <!-- endRemoveIf(!curtain)-->
 
     $(".button-add-rpnrule").on('click', addRPNRule);
     $(".button-add-rpntopic").on('click', addRPNTopic);
@@ -2087,8 +2401,17 @@ $(function() {
 
     $("textarea").on("dblclick", function() { this.select(); });
 
+    resetOriginals();
+
+    $(".group-settings").each(function() {
+        groupSettingsObserver.observe(this, {childList: true});
+    });
+
     // don't autoconnect when opening from filesystem
-    if (window.location.protocol === "file:") { return; }
+    if (window.location.protocol === "file:") {
+        processData({"webMode": 0});
+        return;
+    }
 
     // Check host param in query string
     var search = new URLSearchParams(window.location.search),

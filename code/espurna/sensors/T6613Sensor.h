@@ -9,9 +9,11 @@
 
 #pragma once
 
-#include "Arduino.h"
-#include "BaseSensor.h"
+#include <Arduino.h>
 #include <SoftwareSerial.h>
+
+#include "BaseSensor.h"
+
 
 #define T6613_REQUEST_LEN       5
 #define T6613_RESPONSE_LEN      5
@@ -26,7 +28,7 @@ class T6613Sensor : public BaseSensor {
         // Public
         // ---------------------------------------------------------------------
 
-        T6613Sensor(): BaseSensor() {
+        T6613Sensor() {
             _count = 1;
             _sensor_id = SENSOR_T6613_ID;
         }
@@ -87,7 +89,7 @@ class T6613Sensor : public BaseSensor {
         }
 
         // Descriptive name of the slot # index
-        String slot(unsigned char index) {
+        String description(unsigned char index) {
             return description();
         };
 

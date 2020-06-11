@@ -109,14 +109,36 @@ var htmllintReporter = function(filepath, issues) {
 
 var buildWebUI = function(module) {
 
-    var modules = {'light': false, 'sensor': false, 'rfbridge': false, 'rfm69': false, 'thermostat': false};
+    // Declare some modules as optional to remove with
+    // removeIf(!name) ...code... endRemoveIf(!name) sections
+    // (via gulp-remove-code)
+    var modules = {
+        'light': false,
+        'sensor': false,
+        'rfbridge': false,
+        'rfm69': false,
+        'thermostat': false,
+        'lightfox': false,
+        'curtain': false
+    };
+
+    // Note: only build these when specified as module arg
+    var excludeAll = [
+        'rfm69',
+        'lightfox'
+    ];
+
+    // 'all' to include all *but* excludeAll
+    // '<module>' to include a single module
+    // 'small' is the default state (all disabled)
     if ('all' === module) {
-        modules['light'] = true;
-        modules['sensor'] = true;
-        modules['rfbridge'] = true;
-        modules['rfm69'] = false;   // we will never be adding this except when building RFM69GW
-        modules['lightfox'] = false;   // we will never be adding this except when building lightfox
-        modules['thermostat'] = true;
+        Object.keys(modules).
+            filter(function(key) {
+                return excludeAll.indexOf(key) < 0;
+            }).
+            forEach(function(key) {
+                modules[key] = true;
+            });
     } else if ('small' !== module) {
         modules[module] = true;
     }
@@ -145,7 +167,7 @@ var buildWebUI = function(module) {
             minifyJS: true
         })).
         pipe(replace('pure-', 'p-')).
-        pipe(gzip()).
+        pipe(gzip({ gzipOptions: { level: 9 } })).
         pipe(rename('index.' + module + '.html.gz')).
         pipe(gulp.dest(dataFolder)).
         pipe(toHeader('webui_image', true)).
@@ -197,6 +219,10 @@ gulp.task('webui_thermostat', function() {
     return buildWebUI('thermostat');
 });
 
+gulp.task('webui_curtain', function() {
+    return buildWebUI('curtain');
+});
+
 gulp.task('webui_all', function() {
     return buildWebUI('all');
 });
@@ -210,6 +236,7 @@ gulp.task('webui',
         'webui_rfm69',
         'webui_lightfox',
         'webui_thermostat',
+        'webui_curtain',
         'webui_all'
     )
 );
